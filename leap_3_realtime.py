@@ -183,10 +183,10 @@ def run_leap():
             'test_microphone': True
         },
         "retriever": {
-            # --- LLM / Retrieval (OpenAI-compatible). Z.AI: set ZAI_API_KEY and use base_url below ---
-            "api_key": os.getenv("ZAI_API_KEY", ""),
-            "base_url": "https://api.z.ai/api/paas/v4/",
-            "model": "glm-5",
+            # --- LLM / Retrieval：智谱 OpenAI 兼容接口 ---
+            "api_key": os.getenv("BIGMODEL_API_KEY", ""),
+            "base_url": "https://open.bigmodel.cn/api/paas/v4/",
+            "model": "glm-6v",
             "category": "leap",
         },
         "detector": {
