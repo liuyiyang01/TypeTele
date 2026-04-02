@@ -65,7 +65,7 @@ class Retrieve:
             print(f"[Retrieve] Directory {type_library_path} does not exist, falling back to {base_type_library_path}")
             type_library_path = base_type_library_path
 
-        json_path = os.path.join(type_library_path, f"{self.category}", "_type_info.json")
+        json_path = os.path.join(type_library_path, "_type_info.json")
 
         loaded_from_json = False
         if os.path.exists(json_path):
@@ -163,7 +163,11 @@ class Retrieve:
         with self._input_lock:
             self.input = query
             self.have_new_input = True
-        
+
+    def retrieve_sync(self, query: str):
+        """Run retrieval in-process (no background thread). For testing without hardware."""
+        return self._retrieve(query)
+
     def has_new_result(self):
         with self._result_lock:
             return self.have_new_result

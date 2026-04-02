@@ -186,7 +186,7 @@ def run_leap():
             # --- LLM / Retrieval：智谱 OpenAI 兼容接口 ---
             "api_key": os.getenv("BIGMODEL_API_KEY", ""),
             "base_url": "https://open.bigmodel.cn/api/paas/v4/",
-            "model": "glm-6v",
+            "model": "glm-7",
             "category": "leap",
         },
         "detector": {
