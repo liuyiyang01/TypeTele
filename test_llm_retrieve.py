@@ -45,7 +45,7 @@ def main() -> None:
     )
     p.add_argument(
         "--model",
-        default=os.getenv("BIGMODEL_CHAT_MODEL", "glm-4-flash"),
+        default=os.getenv("BIGMODEL_CHAT_MODEL", "glm-4.5-air"),
     )
     args = p.parse_args()
 
