@@ -7,8 +7,10 @@ import difflib
 import re
 
 class Retrieve:
-    def __init__(self, api_key, base_url, category: str = "papert"):
+    def __init__(self, api_key, base_url, category: str = "papert", model: str | None = None):
         self.client = OpenAI(api_key=api_key, base_url=base_url)
+        # Z.AI: use e.g. "glm-5" / "glm-4.5-air"; BigModel/DeepSeek: e.g. "deepseek-chat"
+        self.model = model or os.getenv("RETRIEVER_MODEL", "deepseek-chat")
 
         self.category = category or "papert"
 
@@ -138,7 +140,7 @@ class Retrieve:
 
         try:
             response = self.client.chat.completions.create(
-                model="deepseek-chat",
+                model=self.model,
                 messages=[
                     {"role": "system", "content": "You are a concise classifier returning only a gesture id or None."},
                     {"role": "user", "content": prompt},

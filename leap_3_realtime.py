@@ -1,4 +1,4 @@
-from asr.tencent_asr import AsrServer
+# from asr.tencent_asr import AsrServer
 from hand_detect.detectFinger import FingerDetector
 from retrieve.retrieve import Retrieve
 from leap_hand_utils.leap_node import LeapNode
@@ -38,10 +38,12 @@ class RealTimeRunner:
 
         # Initialize other components
         self.finger_detector = FingerDetector(cfg["detector"])
+        r_cfg = cfg["retriever"]
         self.retriever = Retrieve(
-            api_key=cfg["retriever"]["api_key"],
-            base_url=cfg["retriever"]["base_url"],
-            category=self.category
+            api_key=r_cfg["api_key"],
+            base_url=r_cfg["base_url"],
+            category=self.category,
+            model=r_cfg.get("model"),
         )
         self.leap_node = LeapNode(self.cfg["leap_cfg"])
 
@@ -181,10 +183,11 @@ def run_leap():
             'test_microphone': True
         },
         "retriever": {
-            # --- LLM / Retrieval Config ---
-            "api_key": "your_api_key",
-            "base_url": "https://api.deepseek.com",
-            "category": "leap"
+            # --- LLM / Retrieval (OpenAI-compatible). Z.AI: set ZAI_API_KEY and use base_url below ---
+            "api_key": os.getenv("ZAI_API_KEY", ""),
+            "base_url": "https://api.z.ai/api/paas/v4/",
+            "model": "glm-5",
+            "category": "leap",
         },
         "detector": {
             "camera": {
