@@ -222,9 +222,9 @@ def main():
     cfg = {
         "leap_cfg": {
             "curr_lim": 150,
-            "kP": 250,
+            "kP": 100,
             "kI": 0,
-            "kD": 100
+            "kD": 150
         },
         "type": {
             "type_name": name,
