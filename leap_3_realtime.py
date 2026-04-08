@@ -2,11 +2,14 @@
 from hand_detect.detectFinger import FingerDetector
 from retrieve.retrieve import Retrieve
 from leap_hand_utils.leap_node import LeapNode
+from planner.task_planner import TaskPlanner, TaskPlan
+from planner.task_executor import TaskExecutor, ExecutionState
 
 import os
 import time
 import numpy as np
 import cv2
+import threading
 
 from asr.typing_asr import KeyboardAsrServer
 
@@ -16,8 +19,10 @@ _INVERSE_INDEX = np.argsort(_REORDER_INDEX)
 
 class RealTimeRunner:
     """
-    Main loop integrating ASR, Hand Detection, Retrieval, and LEAP Hand control.
+    Main loop integrating ASR, Hand Detection, Retrieval, VLM Planning, and LEAP Hand control.
     Components run in separate threads/processes managed via start()/stop().
+    
+    Enhanced with VLM-based multi-step task planning as described in the TypeTele paper.
     """
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -44,8 +49,35 @@ class RealTimeRunner:
             base_url=r_cfg["base_url"],
             category=self.category,
             model=r_cfg.get("model"),
+            enable_vision=r_cfg.get("enable_vision", True)
         )
         self.leap_node = LeapNode(self.cfg["leap_cfg"])
+        
+        # Initialize VLM Task Planner (Section 3.2 of paper)
+        planner_cfg = cfg.get("planner", {})
+        self.task_planner = TaskPlanner(
+            api_key=planner_cfg.get("api_key", r_cfg["api_key"]),
+            base_url=planner_cfg.get("base_url", r_cfg["base_url"]),
+            model=planner_cfg.get("model", "gpt-4o"),  # Paper uses GPT-4o
+            category=self.category,
+            enable_vision=planner_cfg.get("enable_vision", True)
+        )
+        
+        # Initialize Task Executor for multi-step plan execution
+        self.task_executor = TaskExecutor(
+            type_change_callback=self._on_executor_type_change,
+            step_complete_callback=self._on_step_complete,
+            task_complete_callback=self._on_task_complete,
+            default_step_timeout=cfg.get("step_timeout", 15.0)
+        )
+        
+        # Current camera frame for vision input
+        self.current_frame = None
+        self._frame_lock = threading.Lock()
+        
+        # Planning state
+        self._planning_in_progress = False
+        self._current_plan: Optional[TaskPlan] = None
 
     def start(self):
         """Start all components and enter main loop."""
@@ -53,6 +85,8 @@ class RealTimeRunner:
         self.finger_detector.start()
         self.retriever.load_type_library()
         self.retriever.start()
+        self.task_planner.load_type_library()
+        print("[Info] VLM Task Planner initialized with multi-step planning support")
         self.main_loop()
 
     def stop(self):
@@ -95,10 +129,44 @@ class RealTimeRunner:
             
         return open_abs, close_abs
 
+    def _on_executor_type_change(self, type_name: str):
+        """Callback when task executor needs to change type."""
+        try:
+            self.change_type(type_name)
+        except Exception as e:
+            print(f"[Error] Failed to change type in executor: {e}")
+    
+    def _on_step_complete(self, step_number: int, step):
+        """Callback when a step completes."""
+        print(f"[TaskExecutor] Step {step_number} completed: {step.description}")
+    
+    def _on_task_complete(self, plan):
+        """Callback when entire task completes."""
+        print(f"[TaskExecutor] Task completed: {plan.task_description}")
+        self._current_plan = None
+        self._planning_in_progress = False
+    
+    def _is_planning_query(self, query: str) -> bool:
+        """
+        Determine if a query requires multi-step planning.
+        
+        Planning queries typically contain:
+        - Multiple actions (and, then, after)
+        - Complex tasks (pick up X and do Y)
+        - Sequential operations
+        """
+        planning_keywords = [
+            'and then', 'then', 'after', 'first', 'next', 'finally',
+            'pour', 'place', 'move', 'transfer', 'stack', 'open and',
+            'pick up', 'put down', 'give me'
+        ]
+        query_lower = query.lower()
+        return any(kw in query_lower for kw in planning_keywords)
+    
     def main_loop(self):
         try:
             while True:
-                # 1. ASR -> Retrieve
+                # 1. ASR -> Retrieve or Plan
                 if self.asr and self.asr.has_new_result():
                     new_query = self.asr.get()
                     if new_query:
@@ -110,19 +178,82 @@ class RealTimeRunner:
                                 continue
                             except Exception as e:
                                 print(f"[Error] Failed to switch type: {e}")
-                        # Retrieve via LLM
-                        self.retriever.retrieve(new_query)
+                        # Check for special commands
+                        elif new_query.lower() in ['next', 'continue', 'done']:
+                            # Manual step completion
+                            if self.task_executor.is_executing():
+                                self.task_executor.manual_step_complete()
+                            continue
+                        elif new_query.lower() in ['stop', 'cancel', 'abort']:
+                            # Stop current task
+                            if self.task_executor.is_executing():
+                                self.task_executor.stop()
+                                self._planning_in_progress = False
+                                self._current_plan = None
+                                print("[Info] Task execution stopped")
+                            continue
+                        elif new_query.lower() in ['status', 'progress']:
+                            # Show execution status
+                            if self.task_executor.is_executing():
+                                status = self.task_executor.get_status()
+                                print(f"[Status] Step {status['current_step']}/{status['total_steps']}, "
+                                      f"Progress: {status['progress']*100:.1f}%")
+                            else:
+                                print("[Status] No task currently executing")
+                            continue
+                        # Multi-step planning query (Section 3.2 of paper)
+                        elif self._is_planning_query(new_query):
+                            print("[Planner] Multi-step task detected, starting VLM planning...")
+                            self._planning_in_progress = True
+                            # Get current frame for vision context
+                            current_image = None
+                            with self._frame_lock:
+                                if self.current_frame is not None:
+                                    current_image = self.current_frame.copy()
+                            
+                            # Plan task asynchronously
+                            self.task_planner.plan_task_async(new_query, current_image)
+                        else:
+                            # Simple single-step retrieval
+                            # Pass current image for vision-aware retrieval
+                            current_image = None
+                            with self._frame_lock:
+                                if self.current_frame is not None:
+                                    current_image = self.current_frame.copy()
+                            self.retriever.retrieve(new_query, current_image)
 
-                # 2. Retriever Result -> Switch Type
-                if self.retriever.has_new_result():
+                # 2. Check for completed task plans
+                if self._planning_in_progress:
+                    # Check if planning is complete
+                    if self.task_planner.has_new_plan():
+                        plan = self.task_planner.get_plan()
+                        if plan:
+                            print(f"[Planner] Plan received with {plan.total_steps} steps")
+                            self._current_plan = plan
+                            # Start executing the plan
+                            self.task_executor.start_task(plan)
+                        else:
+                            print("[Planner] Planning failed, falling back to simple retrieval")
+                            self._planning_in_progress = False
+                
+                # 3. Update task executor
+                if self.task_executor.is_executing():
+                    self.task_executor.update()
+
+                # 4. Retriever Result -> Switch Type (only if not executing a plan)
+                if not self.task_executor.is_executing() and self.retriever.has_new_result():
                     result = self.retriever.get()
                     if result and result != self.curr_type:
                         self.change_type(result)
 
-                # 3. Hand Detection -> Robot Control
+                # 5. Hand Detection -> Robot Control
                 result = self.finger_detector.get()
                 if result:
                     ratio, bgr = result
+                    
+                    # Store frame for vision input
+                    with self._frame_lock:
+                        self.current_frame = bgr.copy() if bgr is not None else None
                     
                     # Define masks for finger groups
                     thumb_mask = np.array([0]*12 + [1]*4)
@@ -142,6 +273,17 @@ class RealTimeRunner:
                     self.leap_node.set_leap(type_pos)
 
                     if bgr is not None:
+                        # Display execution status on frame
+                        if self.task_executor.is_executing():
+                            status = self.task_executor.get_status()
+                            step_info = self.task_executor.get_current_step_info()
+                            status_text = f"Step {status['current_step']}/{status['total_steps']}: {step_info.description if step_info else ''}"
+                            cv2.putText(bgr, status_text, (10, 30), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                            progress_text = f"Progress: {status['progress']*100:.0f}%"
+                            cv2.putText(bgr, progress_text, (10, 60),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                        
                         cv2.imshow("Hand Detection", bgr)
                         if cv2.waitKey(1) & 0xFF == ord('q'):
                             break
@@ -188,6 +330,14 @@ def run_leap():
             "base_url": "https://open.bigmodel.cn/api/paas/v4/",
             "model": "glm-7",
             "category": "leap",
+            "enable_vision": True,  # Enable vision input for retrieval
+        },
+        "planner": {
+            # --- VLM Task Planner Configuration (Section 3.2 of paper) ---
+            "api_key": os.getenv("BIGMODEL_API_KEY", ""),
+            "base_url": "https://open.bigmodel.cn/api/paas/v4/",
+            "model": os.getenv("PLANNER_MODEL", "glm-4.6v"),  # GLM-4.6V for vision-language planning
+            "enable_vision": True,  # Enable vision for context-aware planning
         },
         "detector": {
             "camera": {
@@ -210,6 +360,7 @@ def run_leap():
             "kI": 0,
             "kD": 150
         },
+        "step_timeout": 15.0,  # Default timeout for each step in multi-step tasks
     }
     runner = RealTimeRunner(cfg)
     runner.start()

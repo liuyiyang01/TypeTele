@@ -23,7 +23,9 @@ class LeapNode:
 
         self.motors = motors = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
-        self.dxl_client = DynamixelClient(motors, '/dev/ttyUSB0', 4000000)
+        self.dxl_client = DynamixelClient(motors, '/dev/cu.usbserial-FTAGUGPE', 4000000)
+        # self.dxl_client = DynamixelClient(motors, '/dev/ttyUSB0', 4000000)
+
         self.dxl_client.connect()
 
         self.dxl_client.sync_write(motors, np.ones(len(motors)) * 5, 11, 1)
