@@ -139,6 +139,7 @@ class TaskExecutor:
         
         print(f"[TaskExecutor] Starting step {step_number}/{self.context.total_steps}: {step.description}")
         print(f"[TaskExecutor] Using manipulation type: {step.manipulation_type}")
+        print(f"[TaskExecutor] Type 'next' or 'continue' when ready to proceed")
         
         # Trigger type change
         if self.type_change_callback:
@@ -165,35 +166,16 @@ class TaskExecutor:
         return self.context.state
     
     def _check_step_completion(self):
-        """Check if current step is complete."""
+        """Check if current step is complete - manual mode only."""
         elapsed = time.time() - self.context.step_start_time
         step = self.context.current_plan.steps[self.context.current_step_number - 1]
         
-        # Check for timeout
-        if elapsed > self.context.step_timeout:
-            print(f"[TaskExecutor] Step {self.context.current_step_number} timeout, proceeding")
-            self.context.state = ExecutionState.STEP_COMPLETE
-            return
-        
-        # Wait for minimum duration
-        if elapsed < self.min_step_duration:
-            return
-        
-        # Check external completion signal if provided
-        if self.completion_check_callback:
-            if self.completion_check_callback():
-                print(f"[TaskExecutor] Step {self.context.current_step_number} completed (external signal)")
-                self.context.state = ExecutionState.STEP_COMPLETE
-                return
-        
-        # Estimate progress based on time
+        # Update progress display only (no auto-completion)
         expected_duration = max(step.duration_estimate, self.min_step_duration)
-        self.context.step_progress = min(elapsed / expected_duration, 1.0)
+        self.context.step_progress = min(elapsed / expected_duration, 0.99)  # Cap at 99% until manual complete
         
-        # Auto-complete if progress reaches threshold
-        if self.context.step_progress >= self.completion_threshold:
-            print(f"[TaskExecutor] Step {self.context.current_step_number} completed (time-based)")
-            self.context.state = ExecutionState.STEP_COMPLETE
+        # Manual completion only - no time-based auto-completion
+        # User must type 'next' or 'continue' to proceed
     
     def _handle_step_complete(self):
         """Handle step completion and transition to next step."""
