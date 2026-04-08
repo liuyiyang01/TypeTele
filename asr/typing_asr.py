@@ -92,7 +92,8 @@ class KeyboardAsrServer:
                 
                 else:
                     self.input_buffer += char
-                    print(char, end='', flush=True)
+                    # Don't print here - terminal already echoes the character
+                    # print(char, end='', flush=True)
             
             time.sleep(0.01)
             

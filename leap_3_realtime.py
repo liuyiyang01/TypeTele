@@ -78,11 +78,44 @@ class RealTimeRunner:
         # Planning state
         self._planning_in_progress = False
         self._current_plan: Optional[TaskPlan] = None
+        
+        # Keyboard grasp control (alternative to camera)
+        self._use_keyboard_grasp = cfg.get("use_keyboard_grasp", False)
+        self._grasp_fraction = 0.0  # 0.0 = open, 1.0 = close
+        self._grasp_step = 0.05  # 5% per step
+
+    def _apply_keyboard_grasp(self):
+        """Apply keyboard-controlled grasp fraction to LEAP hand."""
+        # Clamp fraction
+        self._grasp_fraction = max(0.0, min(1.0, self._grasp_fraction))
+        
+        # Interpolate between open and close positions
+        type_pos = self.open_pos * (1 - self._grasp_fraction) + self.close_pos * self._grasp_fraction
+        self.leap_node.set_leap(type_pos)
+        
+        # Print status bar
+        bar_length = 20
+        filled = int(self._grasp_fraction * bar_length)
+        bar = "█" * filled + "░" * (bar_length - filled)
+        print(f"\rGrasp: [{bar}] {self._grasp_fraction*100:.0f}%", end="", flush=True)
 
     def start(self):
         """Start all components and enter main loop."""
         self.asr.start()
-        self.finger_detector.start()
+        
+        # Start finger detector only if not using keyboard grasp
+        if not self._use_keyboard_grasp:
+            try:
+                self.finger_detector.start()
+                print("[Info] Camera hand tracking enabled")
+            except Exception as e:
+                print(f"[Warning] Failed to start camera: {e}")
+                print("[Info] Falling back to keyboard grasp control")
+                self._use_keyboard_grasp = True
+        else:
+            print("[Info] Keyboard grasp control enabled (camera disabled)")
+            print("[Info] Controls: 'o'=open, 'c'=close, 'a'=decrease, 'd'=increase")
+        
         self.retriever.load_type_library()
         self.retriever.start()
         self.task_planner.load_type_library()
@@ -91,7 +124,11 @@ class RealTimeRunner:
 
     def stop(self):
         self.asr.stop()
-        self.finger_detector.stop()
+        if not self._use_keyboard_grasp:
+            try:
+                self.finger_detector.stop()
+            except:
+                pass
         self.retriever.stop()
         cv2.destroyAllWindows()
 
@@ -99,6 +136,8 @@ class RealTimeRunner:
         print(f"[Info] Switching grasp type: {self.curr_type} -> {new_type}")
         self.curr_type = new_type
         self.open_pos, self.close_pos = self.load_type(self.curr_type)
+        # Reset grasp fraction when type changes
+        self._grasp_fraction = 0.0
 
     def load_type(self, type_name: str):
         """Load and decode grasp primitive (open/close poses) from file."""
@@ -201,6 +240,29 @@ class RealTimeRunner:
                             else:
                                 print("[Status] No task currently executing")
                             continue
+                        # Keyboard grasp control commands - ALWAYS handle these, don't send to VLM
+                        elif new_query.lower() in ['o', 'open']:
+                            # Open hand fully
+                            self._grasp_fraction = 0.0
+                            self._apply_keyboard_grasp()
+                            print("\n[Grasp] Hand opened")
+                            continue
+                        elif new_query.lower() in ['c', 'close']:
+                            # Close hand fully
+                            self._grasp_fraction = 1.0
+                            self._apply_keyboard_grasp()
+                            print("\n[Grasp] Hand closed")
+                            continue
+                        elif new_query.lower() == 'a':
+                            # Decrease grasp (more open)
+                            self._grasp_fraction -= self._grasp_step
+                            self._apply_keyboard_grasp()
+                            continue
+                        elif new_query.lower() == 'd':
+                            # Increase grasp (more close)
+                            self._grasp_fraction += self._grasp_step
+                            self._apply_keyboard_grasp()
+                            continue
                         # Multi-step planning query (Section 3.2 of paper)
                         elif self._is_planning_query(new_query):
                             print("[Planner] Multi-step task detected, starting VLM planning...")
@@ -246,8 +308,15 @@ class RealTimeRunner:
                     if result and result != self.curr_type:
                         self.change_type(result)
 
-                # 5. Hand Detection -> Robot Control
-                result = self.finger_detector.get()
+                # 5. Hand Detection -> Robot Control (only if camera is enabled)
+                if not self._use_keyboard_grasp:
+                    try:
+                        result = self.finger_detector.get()
+                    except Exception as e:
+                        result = None
+                else:
+                    result = None
+                
                 if result:
                     ratio, bgr = result
                     
@@ -328,7 +397,7 @@ def run_leap():
             # --- LLM / Retrieval：智谱 OpenAI 兼容接口 ---
             "api_key": os.getenv("BIGMODEL_API_KEY", ""),
             "base_url": "https://open.bigmodel.cn/api/paas/v4/",
-            "model": "glm-7",
+            "model": "glm-4.5-air",
             "category": "leap",
             "enable_vision": True,  # Enable vision input for retrieval
         },
@@ -361,6 +430,7 @@ def run_leap():
             "kD": 150
         },
         "step_timeout": 15.0,  # Default timeout for each step in multi-step tasks
+        "use_keyboard_grasp": True,  # Use keyboard 'a'/'d'/'o'/'c' for grasp control instead of camera
     }
     runner = RealTimeRunner(cfg)
     runner.start()
